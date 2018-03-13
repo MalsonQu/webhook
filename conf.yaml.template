@@ -1,0 +1,16 @@
+project:
+  -
+    path: # git 项目所在的路径 eg:~/go/src/github.com/MalsonQu/webhook
+    user: # 使用哪个用户来执行git pull eg:www-data
+    publickey: # 公钥 eg:123123
+    full_name: # 项目名称 eg:MalsonQu/webhook
+
+getteremail: # 邮件接收者
+  - #eg:quqingyu@live.cn
+port: # 服务开启的端口号 eg:8080
+senderemail: # 发送邮件的账号
+  host: # 主机名 eg:127.0.0.1
+  port: # 端口号 eg:25
+  user: # 用户 abc@def.com
+  password: # 密码 asdasd
+
