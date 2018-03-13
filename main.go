@@ -119,16 +119,22 @@ func (th *WebHook) SendMail(host, port, user, password string, to []string, subj
 
 // 处理请求
 func (th *WebHook) Process(w http.ResponseWriter, r *http.Request) {
-	//header 信息
+	log.Println("收到服务器请求")
+
+	if r.Header.Get("X-Coding-Event") == "" || r.Header.Get("X-Coding-Signature") == "" || r.Header.Get("X-Coding-Delivery") == "" {
+		log.Println("非法请求")
+		return
+	}
+
+	if r.Header.Get("X-Coding-Event") != "push" {
+		log.Printf("请求类型为 %s ,忽略请求\n" , r.Header.Get("X-Coding-Event"))
+		return
+	}
+
 	//获取 请求body 信息 json 数据
 	body, err := ioutil.ReadAll(r.Body)
 	if err != nil {
 		log.Printf("读取请求信息出错 %v\n", err)
-		return
-	}
-
-	if r.Header.Get("X-Coding-Event") == "" || r.Header.Get("X-Coding-Signature") == "" || r.Header.Get("X-Coding-Delivery") == "" {
-		log.Println("非法请求")
 		return
 	}
 
