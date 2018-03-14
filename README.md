@@ -7,6 +7,12 @@
 
 ## 使用
 
+#### 下载依赖
+```text
+// 我知道这样做非常土。。。。
+go get gopkg.in/yaml.v2
+```
+
 #### 编译
 ```
 go build github.com/MalsonQu/webhook
