@@ -1,17 +1,17 @@
 package main
 
 import (
-	"io/ioutil"
-	"gopkg.in/yaml.v2"
-	"fmt"
-	"net/http"
-	"crypto/sha1"
 	"crypto/hmac"
+	"crypto/sha1"
 	"encoding/json"
+	"fmt"
+	"gopkg.in/yaml.v2"
+	"io/ioutil"
 	"log"
+	"net/http"
+	"net/smtp"
 	"os/exec"
 	"strings"
-	"net/smtp"
 )
 
 //type WebHook interface {
@@ -23,37 +23,47 @@ type WebHook struct {
 	Conf Conf
 }
 
+type project struct {
+	Path      string `yaml:"path"`
+	PublicKey string `yaml:"public_key"`
+	FullName  string `yaml:"full_name"`
+	Ref       string `yaml:"ref"`
+}
+
+type senderEmail struct {
+	Host     string `yaml:"host"`
+	Port     string `yaml:"port"`
+	User     string `yaml:"user"`
+	Password string `yaml:"password"`
+}
+
 type Conf struct {
-	//GetterEmail []string `ymal:",flow"`
-	Project []struct {
-		Path      string
-		User      string
-		PublicKey string
-		Full_name string
-	}
-	GetterEmail []string
-	Port        string
-	SenderEmail struct {
-		Host     string
-		Port     string
-		User     string
-		Password string
-	}
+	Project         []project   `yaml:"project"`
+	Port            string      `yaml:"port"`
+	TurnOnEmailSend bool        `yaml:"turn_on_email_send"`
+	GetterEmail     []string    `yaml:"getter_email"`
+	SenderEmail     senderEmail `yaml:"sender_email"`
+}
+
+type committer struct {
+	Name     string `json:"name"`
+	Email    string `json:"email"`
+	Username string `json:"username"`
+}
+
+type headCommit struct {
+	Committer committer `json:"committer"`
+	Message   string    `json:"message"`
+}
+
+type repository struct {
+	FullName string `json:"full_name"`
 }
 
 type Json struct {
-	Head_commit struct {
-		Committer struct {
-			Name     string
-			Email    string
-			Username string
-		}
-		Message string
-	}
-	Repository struct {
-		Full_name string
-	}
-	Ref string
+	Ref        string     `json:"ref"`
+	HeadCommit headCommit `json:"head_commit"`
+	Repository repository `json:"repository"`
 }
 
 func (th *WebHook) init() error {
@@ -76,19 +86,16 @@ func (th *WebHook) InitConf() error {
 	if err != nil {
 		return err
 	}
+
 	return nil
 }
 
-func (th *WebHook) Pull(path, user string) ([]byte, error) {
+func (th *WebHook) Pull(path string) ([]byte, error) {
 
 	var cmd *exec.Cmd
 
 	// 如果没有定义用户类型
-	if user == "" {
-		cmd = exec.Command("git", "pull")
-	} else {
-		cmd = exec.Command("sudo", "-u", user, "git", "pull")
-	}
+	cmd = exec.Command("git", "pull")
 
 	// 设置运行路径
 	cmd.Dir = path
@@ -127,16 +134,19 @@ func (th *WebHook) Process(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if r.Header.Get("X-Coding-Event") != "push" {
-		log.Printf("请求类型为 %s ,忽略请求\n" , r.Header.Get("X-Coding-Event"))
+		log.Printf("请求类型为 %s ,忽略请求\n", r.Header.Get("X-Coding-Event"))
 		return
 	}
 
 	//获取 请求body 信息 json 数据
 	body, err := ioutil.ReadAll(r.Body)
+
 	if err != nil {
 		log.Printf("读取请求信息出错 %v\n", err)
 		return
 	}
+
+	defer r.Body.Close()
 
 	// 解析json
 	response, err := th.UnmarshalJson(body)
@@ -150,7 +160,7 @@ func (th *WebHook) Process(w http.ResponseWriter, r *http.Request) {
 	projectIndex := -1
 
 	for index, value := range th.Conf.Project {
-		if response.Repository.Full_name == value.Full_name {
+		if response.Repository.FullName == value.FullName && response.Ref == value.Ref {
 			projectIndex = index
 			break
 		}
@@ -161,27 +171,36 @@ func (th *WebHook) Process(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// 项目配置
+	projectConf := th.Conf.Project[projectIndex]
+
 	// 验证请求是否合法
-	if !th.CheckMAC(&body, r.Header.Get(`X-Coding-Signature`)[5:], th.Conf.Project[projectIndex].PublicKey) {
+	if !th.CheckMAC(&body, r.Header.Get(`X-Coding-Signature`)[5:], projectConf.PublicKey) {
 		log.Println("服务端请求验证失败")
 		return
 	}
 	// 拉取项目
-	output, err := th.Pull(th.Conf.Project[projectIndex].Path, th.Conf.Project[projectIndex].User)
+	output, err := th.Pull(projectConf.Path)
 
 	if err != nil {
-		log.Printf("项目<%v>拉取出错,错误信息将通过邮件发送", th.Conf.Project[projectIndex].Full_name)
-		err = th.SendMail(th.Conf.SenderEmail.Host, th.Conf.SenderEmail.Port, th.Conf.SenderEmail.User, th.Conf.SenderEmail.Password, th.Conf.GetterEmail, "项目<"+th.Conf.Project[projectIndex].Full_name+">拉取出错!", "错误信息:\n---------------------------------------------------------------------------------\n"+string(output))
-		if err != nil {
-			log.Printf("邮件发送失败 \n%v\n", err)
-			return
-		} else {
-			log.Println("错误信息已发送到邮箱中!")
-			return
+		log.Printf("项目<%v>拉取出错,错误信息:\n%s", projectConf.FullName+"-"+projectConf.Ref, string(output))
+
+		// 判断是否发送邮件
+		if th.Conf.TurnOnEmailSend {
+			log.Printf("项目<%v>拉取出错,错误信息将通过邮件发送", projectConf.FullName+"-"+projectConf.Ref)
+			err = th.SendMail(th.Conf.SenderEmail.Host, th.Conf.SenderEmail.Port, th.Conf.SenderEmail.User, th.Conf.SenderEmail.Password, th.Conf.GetterEmail, "项目<"+projectConf.FullName+"-"+projectConf.Ref+">拉取出错!", "错误信息:\n---------------------------------------------------------------------------------\n"+string(output))
+			if err != nil {
+				log.Printf("邮件发送失败 \n%v\n", err)
+				return
+			} else {
+				log.Println("错误信息已发送到邮箱中!")
+				return
+			}
 		}
+		return
 	}
 
-	log.Printf("项目 %v 更新成功", th.Conf.Project[projectIndex].Full_name)
+	log.Printf("项目 %v 更新成功", projectConf.FullName)
 	return
 }
 
@@ -223,12 +242,14 @@ func main() {
 
 	if err != nil {
 		log.Printf("系统初始化失败 %v\n", err)
+		return
 	}
 
 	// 启动
 	err = w.StartServer()
 	if err != nil {
 		log.Fatalf("服务器启动失败 %v\n", err)
+		return
 	}
 
 }
